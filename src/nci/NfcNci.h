@@ -22,6 +22,7 @@
 #define __NFC_NCI_H__
 
 #include <Arduino.h>
+#include <functional>
 #include "log/NfcLog.h"
 #include "hw/NfcHw.h"
 
@@ -308,30 +309,40 @@ enum
 };
 typedef uint8_t tNFC_STATE;
 
-typedef void (*pNCI_CB) (uint8_t status, uint16_t id, void *data);
+// Callback object that clients have to implement
+// to be notified on response or event
+class NfcNciCb 
+{
+    public:
+        NfcNciCb(void) {;}
+        virtual void cbCoreReset(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbCoreInit(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDiscoverMap(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDiscover(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDiscoverNtf(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDeactivate(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbError(uint8_t status, uint16_t id, void *data) = 0;  
+};
 
-typedef struct {
-    pNCI_CB p_cb;
-    void *data;
-} tNCI_CB;
-
+// NCI API definition which implements the NCI interface
+// as defined by the NFC Forum to drive NFC controller
 class NfcNci
 {
     public:
         NfcNci(NfcLog& log, NfcHw& hw);
-        void init(void) {;}
+        void init(NfcNciCb *cb) {_cb = cb;}
         void handleEvent(void);
-        void registerCb(pNCI_CB p_cb);
-        uint8_t cmdCoreReset(pNCI_CB p_cb, uint8_t type);
-        uint8_t cmdCoreInit(pNCI_CB p_cb);
-        uint8_t cmdRfDiscoverMap(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_MAPS* p_maps);
-        uint8_t cmdRfDiscover(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_CONFS* p_confs);
-        uint8_t cmdRfDeactivate(pNCI_CB p_cb, uint8_t type);
+        uint8_t cmdCoreReset(uint8_t type);
+        uint8_t cmdCoreInit(void);
+        uint8_t cmdRfDiscoverMap(uint8_t num, tNCI_DISCOVER_MAPS* p_maps);
+        uint8_t cmdRfDiscover(uint8_t num, tNCI_DISCOVER_CONFS* p_confs);
+        uint8_t cmdRfDeactivate(uint8_t type);
 
     private:
         uint32_t waitForEvent(uint8_t buf[]);
-        uint8_t handleCoreEvent(uint8_t buf[], uint32_t len);
-        uint8_t handleRfEvent(uint8_t buf[], uint32_t len);
+        void handleCoreEvent(uint8_t buf[], uint32_t len);
+        void handleRfEvent(uint8_t buf[], uint32_t len);
         uint8_t rspCoreReset(uint8_t buf[]);
         uint8_t rspCoreInit(uint8_t buf[]);
         uint8_t rspRfDiscoverMap(uint8_t buf[]);
@@ -346,6 +357,8 @@ class NfcNci
         tNFC_STATE _state;
         NfcLog& _log;
         NfcHw& _hw;
+        NfcNciCb *_cb;
+        void *_data;
 };
 
 #endif /* __NFC_NCI_H__ */

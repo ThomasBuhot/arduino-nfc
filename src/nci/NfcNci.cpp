@@ -20,9 +20,6 @@
 
 #include "NfcNci.h"
 
-// callback object
-tNCI_CB _cb;
-
 // reset response object
 tNCI_RESET _reset;
 
@@ -32,20 +29,14 @@ tNCI_RF_INTF _rf_intf;
 // deactivate oject
 tNCI_DEACTIVATE _deactivate;
 
-#define getRxBuffer()   (_rx_buf)
-#define getTxBuffer()   (_tx_buf)
+#define getRxBuffer()       (_rx_buf)
+#define getTxBuffer()       (_tx_buf)
 
 NfcNci::NfcNci(NfcLog& log, NfcHw& hw) :
         _state(NCI_STATE_NONE), _log(log), _hw(hw)
 {
-    _cb.p_cb = NULL;
-    _cb.data = NULL;
-}
-
-void NfcNci::registerCb(pNCI_CB p_cb)
-{
-    _cb.p_cb = p_cb;
-    _cb.data = NULL;
+    _cb = NULL;
+    _data = NULL;
 }
 
 uint32_t NfcNci::waitForEvent(uint8_t buf[])
@@ -75,8 +66,14 @@ end:
 void NfcNci::handleEvent(void)
 {
     uint8_t *p, *buf;
-    uint8_t mt, pbf, gid, oid, status;
+    uint8_t mt, pbf, gid, oid;
     uint32_t len;
+
+    // check callback object
+    if (_cb == NULL) {
+        _log.e("NCI error: no callback object registered\n");
+        return;
+    }
 
     // wait for event
     oid = mt = 0;
@@ -84,8 +81,8 @@ void NfcNci::handleEvent(void)
     len = waitForEvent(buf);
     if (len <= 0) {
         _log.e("NCI error: null event received\n");
-        status = NCI_STATUS_FAILED;
-        goto do_callback;
+        _cb->cbError(NCI_STATUS_FAILED, UINT16_ID(mt, oid), NULL);
+        return;
     }
 
     // read event header
@@ -98,32 +95,27 @@ void NfcNci::handleEvent(void)
     // FIXME: data packet message not handled
     if (pbf != NCI_PBF_NO_OR_LAST) {
         _log.e("NCI error: segmentation and reassembly messages not handled yet\n");
-        status = NCI_STATUS_SYNTAX_ERROR;
-        goto do_callback;
+        _cb->cbError(NCI_STATUS_SYNTAX_ERROR, UINT16_ID(mt, oid), NULL);
+        return;
     }
 
     // broadcast to the right handler
     switch(gid) {
         case NCI_GID_CORE:
-            status = handleCoreEvent(buf, len);
+            handleCoreEvent(buf, len);
             break;
         case NCI_GID_RF_MANAGE:
-            status = handleRfEvent(buf, len);
+            handleRfEvent(buf, len);
             break;
         case NCI_GID_EE_MANAGE:
         case NCI_GID_PROP:
         default:
-            status = NCI_STATUS_UNKNOWN_GID;
+            _cb->cbError(NCI_STATUS_UNKNOWN_GID, UINT16_ID(mt, oid), NULL);
             break;
-    }
-
-do_callback:
-    if (_cb.p_cb != NULL) {
-        (*_cb.p_cb)(status, UINT16_ID(mt, oid), _cb.data);
     }
 }
 
-uint8_t NfcNci::handleCoreEvent(uint8_t buf[], uint32_t len)
+void NfcNci::handleCoreEvent(uint8_t buf[], uint32_t len)
 {
     uint8_t *p;
     uint8_t mt, pbf, gid, oid, status;
@@ -138,8 +130,8 @@ uint8_t NfcNci::handleCoreEvent(uint8_t buf[], uint32_t len)
     // FIXME: only response message are handled at the moment
     if (mt != NCI_MT_RSP) {
         _log.e("NCI error: only response messages are handled by core now\n");
-        status = NCI_STATUS_SYNTAX_ERROR;
-        goto bail;
+        _cb->cbError(NCI_STATUS_SYNTAX_ERROR, UINT16_ID(mt, oid), NULL);
+        return;
     }
 
     // FIXME: check event length = header + data length?
@@ -147,21 +139,20 @@ uint8_t NfcNci::handleCoreEvent(uint8_t buf[], uint32_t len)
     switch (oid) {
         case NCI_MSG_CORE_RESET:
             status = rspCoreReset(p);
+            _cb->cbCoreReset(status, UINT16_ID(mt, oid), _data);
             break;
         case NCI_MSG_CORE_INIT:
             status = rspCoreInit(p);
+            _cb->cbCoreInit(status, UINT16_ID(mt, oid), _data);
             break;
         default:
             _log.e("NCI error: unhandled core event oid = %d\n", oid);
-            status = NCI_STATUS_UNKNOWN_OID;
+            _cb->cbError(NCI_STATUS_UNKNOWN_OID, UINT16_ID(mt, oid), NULL);
             break;
     }
-
-bail:
-    return status;
 }
 
-uint8_t NfcNci::handleRfEvent(uint8_t buf[], uint32_t len)
+void NfcNci::handleRfEvent(uint8_t buf[], uint32_t len)
 {
     uint8_t *p;
     uint8_t mt, pbf, gid, oid, status;
@@ -181,16 +172,19 @@ uint8_t NfcNci::handleRfEvent(uint8_t buf[], uint32_t len)
             switch (oid) {
                 case NCI_MSG_RF_DISCOVER_MAP:
                     status = rspRfDiscoverMap(p);
+                    _cb->cbRfDiscoverMap(status, UINT16_ID(mt, oid), _data);
                     break;
                 case NCI_MSG_RF_DISCOVER:
                     status = rspRfDiscover(p);
+                    _cb->cbRfDiscover(status, UINT16_ID(mt, oid), _data);
                     break;
                 case NCI_MSG_RF_DEACTIVATE:
                     status = rspRfDeactivate(p);
+                    _cb->cbRfDeactivate(status, UINT16_ID(mt, oid), _data);
                     break;
                 default:
                     _log.e("NCI error: unhandled rf event oid = %d\n", oid);
-                    status = NCI_STATUS_UNKNOWN_OID;
+                    _cb->cbError(NCI_STATUS_UNKNOWN_OID, UINT16_ID(mt, oid), NULL);
                     break;
             }
             break;
@@ -199,26 +193,26 @@ uint8_t NfcNci::handleRfEvent(uint8_t buf[], uint32_t len)
             switch(oid) {
                 case NCI_MSG_RF_INTF_ACTIVATED:
                     status = ntfRfIntfActivated(p);
+                    _cb->cbRfDiscoverNtf(status, UINT16_ID(mt, oid), _data);
                     break;
                 case NCI_MSG_RF_DEACTIVATE:
                     status = ntfRfDeactivate(p);
+                    _cb->cbRfDeactivateNtf(status, UINT16_ID(mt, oid), _data);
                     break;
                 default:
                     _log.e("NCI error: unhandled rf event oid = %d\n", oid);
-                    status = NCI_STATUS_UNKNOWN_OID;
+                    _cb->cbError(NCI_STATUS_UNKNOWN_OID, UINT16_ID(mt, oid), NULL);
                     break;
             }
             break;
         default:
             _log.e("NCI error: unhandled rf event mt = %d\n", mt);
-            status = NCI_STATUS_SYNTAX_ERROR;
+            _cb->cbError(NCI_STATUS_SYNTAX_ERROR, UINT16_ID(mt, oid), NULL);
             break;
     }
-
-    return status;
 }
 
-uint8_t NfcNci::cmdCoreReset(pNCI_CB p_cb, uint8_t type)
+uint8_t NfcNci::cmdCoreReset(uint8_t type)
 {
     uint8_t *p, *buf;
     uint8_t status, ret;
@@ -231,10 +225,6 @@ uint8_t NfcNci::cmdCoreReset(pNCI_CB p_cb, uint8_t type)
         status = NCI_STATUS_REJECTED;
         goto end;
     }
-    if (p_cb == NULL) {
-        status = NCI_STATUS_INVALID_PARAM;
-        goto end;
-    }
     switch(type) {
         case NCI_RESET_TYPE_KEEP_CFG:
         case NCI_RESET_TYPE_RESET_CFG:
@@ -243,9 +233,6 @@ uint8_t NfcNci::cmdCoreReset(pNCI_CB p_cb, uint8_t type)
             status = NCI_STATUS_INVALID_PARAM;
             goto end;
     }
-
-    // register callback
-    registerCb(p_cb);
 
     // get RX buffer
     buf = getTxBuffer();
@@ -295,7 +282,7 @@ uint8_t NfcNci::rspCoreReset(uint8_t buf[])
     // reset command response: NCI version | configuration 
     _reset.version = *p++;
     _reset.status = *p;
-    _cb.data = (void *)&_reset;
+    _data = (void *)&_reset;
 
     // set state
     _state = NCI_STATE_RFST_RESET;
@@ -304,7 +291,7 @@ end:
     return status;
 }
 
-uint8_t NfcNci::cmdCoreInit(pNCI_CB p_cb)
+uint8_t NfcNci::cmdCoreInit(void)
 {
     uint8_t *p, *buf;
     uint8_t len, ret, status;
@@ -317,13 +304,6 @@ uint8_t NfcNci::cmdCoreInit(pNCI_CB p_cb)
         status = NCI_STATUS_REJECTED;
         goto end;
     }
-    if (p_cb == NULL) {
-        status = NCI_STATUS_INVALID_PARAM;
-        goto end;
-    }
-
-    // register callback
-    registerCb(p_cb);
 
     // get TX buffer
     buf = getTxBuffer();
@@ -372,13 +352,14 @@ uint8_t NfcNci::rspCoreInit(uint8_t buf[])
 
     // FIXME: initialize init response structure
     // set state
+    _data = NULL;
     _state = NCI_STATE_RFST_IDLE;
 
 end:
     return status;
 }
 
-uint8_t NfcNci::cmdRfDiscoverMap(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_MAPS *p_maps)
+uint8_t NfcNci::cmdRfDiscoverMap(uint8_t num, tNCI_DISCOVER_MAPS *p_maps)
 {
     uint8_t *p, *buf, *p_size, *p_start;
     uint8_t len, status, ret;
@@ -391,13 +372,10 @@ uint8_t NfcNci::cmdRfDiscoverMap(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_MAPS *
         status = NCI_STATUS_REJECTED;
         goto end;
     }
-    if (p_cb == NULL || p_maps == NULL) {
+    if (p_maps == NULL) {
         status = NCI_STATUS_INVALID_PARAM;
         goto end;
     }
-
-    // register callback
-    registerCb(p_cb);
 
     // get TX buffer
     buf = getTxBuffer();
@@ -452,11 +430,14 @@ uint8_t NfcNci::rspRfDiscoverMap(uint8_t buf[])
     // read status
     status = *p;
 
+    // no data
+    _data = NULL;
+
 end:
     return status;
 }
 
-uint8_t NfcNci::cmdRfDiscover(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_CONFS *p_confs)
+uint8_t NfcNci::cmdRfDiscover(uint8_t num, tNCI_DISCOVER_CONFS *p_confs)
 {
     uint8_t *p, *buf, *p_size, *p_start;
     uint8_t len, status, ret;
@@ -465,17 +446,14 @@ uint8_t NfcNci::cmdRfDiscover(pNCI_CB p_cb, uint8_t num, tNCI_DISCOVER_CONFS *p_
     _log.d("NCI_CMD: NCI_MSG_RF_DISCOVER\n");
 
     // check state, parameters
-    if (_state != NCI_STATE_RFST_IDLE || p_cb == NULL) {
+    if (_state != NCI_STATE_RFST_IDLE) {
         status = NCI_STATUS_REJECTED;
         goto end;
     }
-    if (p_cb == NULL || num == 0 || p_confs == NULL) {
+    if (num == 0 || p_confs == NULL) {
         status = NCI_STATUS_INVALID_PARAM;
         goto end;
     }
-
-    // register callback
-    registerCb(p_cb);
 
     // get TX buffer
     buf = getTxBuffer();
@@ -534,6 +512,9 @@ uint8_t NfcNci::rspRfDiscover(uint8_t buf[])
 
     // set state
     _state = NCI_STATE_RFST_DISCOVERY;
+
+    // no data
+    _data = NULL;
 
 end:
     return status;
@@ -607,7 +588,7 @@ uint8_t NfcNci::ntfRfIntfActivated(uint8_t buf[])
     len = *p++;
 
     // FIXME: implement activation
-    _cb.data = (void *)&_rf_intf;
+    _data = (void *)&_rf_intf;
  
     // set state
     _state = NCI_STATE_RFST_POLL_ACTIVE;
@@ -619,7 +600,7 @@ end:
     return status;
 }
 
-uint8_t NfcNci::cmdRfDeactivate(pNCI_CB p_cb, uint8_t type)
+uint8_t NfcNci::cmdRfDeactivate(uint8_t type)
 {
     uint8_t *p, *buf;
     uint8_t status, ret;
@@ -628,17 +609,10 @@ uint8_t NfcNci::cmdRfDeactivate(pNCI_CB p_cb, uint8_t type)
     _log.d("NCI_CMD: NCI_MSG_RF_DEACTIVATE\n");
 
     // check state
-    if (_state != NCI_STATE_RFST_POLL_ACTIVE || p_cb == NULL) {
+    if (_state != NCI_STATE_RFST_POLL_ACTIVE) {
         status = NCI_STATUS_REJECTED;
         goto end;
     }
-    if (p_cb == NULL) {
-        status = NCI_STATUS_INVALID_PARAM;
-        goto end;
-    }
-
-    // register callback
-    registerCb(p_cb);
 
     // get RX buffer
     buf = getTxBuffer();
@@ -688,6 +662,9 @@ uint8_t NfcNci::rspRfDeactivate(uint8_t buf[])
     // set state
     _state = NCI_STATE_RFST_DISCOVERY;
 
+    // no data
+    _data = NULL;
+
 end:
     return status;
 }
@@ -716,7 +693,7 @@ uint8_t NfcNci::ntfRfDeactivate(uint8_t buf[])
     // set deactivation data
     _deactivate.type = *p++;
     _deactivate.reason = *p;
-    _cb.data = (void *)&_deactivate;
+    _data = (void *)&_deactivate;
 
     // no error
     status = NCI_STATUS_OK;
@@ -724,3 +701,4 @@ uint8_t NfcNci::ntfRfDeactivate(uint8_t buf[])
 end:
     return status;
 }
+

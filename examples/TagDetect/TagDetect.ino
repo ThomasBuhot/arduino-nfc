@@ -22,13 +22,21 @@
  *           Purpose of this sketch
  *
  * The purpose of this sketch is to provide
- * an example of NFC tag detection with an
- * NFC conftoller driven by the NFC NCI
- * (NFC Controller Interface) as defined by
- * the NFC Forum.
+ * an example of NFC tag detection by using
+ * a simple but efficient NFC stack.
+ * 
+ * The NFC stack implements a tag API
+ * which drives an NFC controller
+ * through the NCI (NFC Controller Interface)
+ * as defined by the NFC Forum. The NFC stack
+ * consists in:
+ * - NfcTags: high level tag API
+ * - NfcNci : NCI implementation, hardware
+ *            independent
+ * - NfcHw  : NFC hardaware interface
  *
- * It configures the NFC Controller to
- * detect tag of types 1, 2 or 3 as per
+ * The NFC stack configures the NFC Controller
+ * to detect tag of types 1, 2 or 3 as per
  * the NFC Forum specifications.
  *
  * This sketch:
@@ -55,236 +63,101 @@
 #define PN7120_I2C_ADDRESS  40 // 0x28
 
 /**********************************************
- *           NCI RF configuration
+ *          Sketch application class
  *
- * Discover tag type 1, 2 and 3 in polling mode
- * with frame interface.
- * Poll tag detection RF mode A and F.
- **********************************************/
-
-tNCI_DISCOVER_MAPS discover_maps[] =
-{
-    // T1T + poll mode + frame RF interface
-    {
-        NCI_PROTOCOL_T1T,
-        NCI_INTERFACE_MODE_POLL,
-        NCI_INTERFACE_FRAME
-    },
-    // T2T + poll mode + frame RF interface
-    {
-        NCI_PROTOCOL_T2T,
-        NCI_INTERFACE_MODE_POLL,
-        NCI_INTERFACE_FRAME
-    },
-    // T3T + poll mode + frame RF interface
-    {
-        NCI_PROTOCOL_T3T,
-        NCI_INTERFACE_MODE_POLL,
-        NCI_INTERFACE_FRAME
-    }
-};
-
-tNCI_DISCOVER_CONFS discover_confs[] =
-{
-    // poll A + always
-    {
-        NCI_DISCOVERY_TYPE_POLL_A,
-        NCI_DISCOVERY_FREQUENCY_ALWAYS
-    },
-    // poll F + always
-    {
-        NCI_DISCOVERY_TYPE_POLL_F,
-        NCI_DISCOVERY_FREQUENCY_ALWAYS
-    }
-};
-
-/**********************************************
- *           Sketch state machine
- *********************************************/
-
-enum
-{
-    STATE_RESET = 0,
-    STATE_INIT,
-    STATE_DISCOVER_MAP,
-    STATE_DISCOVER,
-    STATE_DISCOVERING,
-    STATE_CONNECTED,
-    STATE_ERROR,
-    STATE_END
-};
-
-const char *stateToStr [] = {
-    "STATE_RESET",
-    "STATE_INIT",
-    "STATE_DISCOVER_MAP",
-    "STATE_DISCOVER",
-    "STATE_DISCOVERING",
-    "STATE_CONNECTED",
-    "STATE_ERROR",
-    "STATE_END"
-};
-
-/**********************************************
- *           Initialization
- *
- * _log: logger (serial)
- * _pn7120: NXP PN7120 NFC chipset
- * _nci: NFC Connection Interface (NFC Forum)
- * _state: internal state
- * _nci_cb: NCI callback object
- **********************************************/
-
-NfcLog _log(NFC_LOG_LEVEL_INFO);
-NfcHw_pn7120 _pn7120(_log, PN7120_IRQ, PN7120_RESET, PN7120_I2C_ADDRESS);
-NfcNci _nci(_log, _pn7120);
-uint8_t _state;
-
-/**********************************************
- *           State machine callbacks
- *
+ * Implements the state machine and event
+ * handler of the sketch. Besides, interfaces
+ * with the NfcTags class which offers the
+ * NFC API for tags detection and handling.
  * Each callback is called upon NFC controller
- * response or event received.
+ * response or event received from Tags class.
  * The callbacks are used to:
  * - check the reponse / event status and data,
  * - change the current state accordingly.
  **********************************************/
 
-void cbCoreReset(uint8_t status, uint16_t id, void *data)
+// state definition
+enum
 {
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+    STATE_RESET = 0,
+    STATE_RESET_RESPONSE,
+    STATE_DISCOVER,
+    STATE_DISCOVER_RESPONSE,
+    STATE_DISCOVERING,
+    STATE_DEACTIVATE,
+    STATE_DEACTIVATE_RESPONSE,
+    STATE_ERROR,
+    STATE_END
+};
 
-    if (status != NCI_STATUS_OK || id != NCI_ID_RSP_CORE_RESET) {
-        _state = STATE_ERROR;
-    }
-    else {
-        _log.i("TagDetect: NFC controller reseted\n");
-        _state = STATE_INIT;
-    }
-}
+const char *tagDetectStateToStr[] = {
+    "STATE_RESET",
+    "STATE_RESET_RESPONSE",
+    "STATE_DISCOVER",
+    "STATE_DISCOVER_RESPONSE",
+    "STATE_DISCOVERING",
+    "STATE_DEACTIVATE",
+    "STATE_DEACTIVATE_RESPONSE",
+    "STATE_ERROR",
+    "STATE_END"
+};
 
-void cbCoreInit(uint8_t status, uint16_t id, void *data)
+// Sketch application object to interface with NfcTags API
+class NfcApps : public NfcTagsCb
 {
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+    public:
+        NfcApps(NfcLog& log, NfcTags& tags) : _state(STATE_RESET), _log(log), _tags(tags) {;}
+        void init(void) {;}
+        void handleEvent(void);
+        void cbReset(uint8_t status, uint16_t id, void *data);
+        void cbDiscover(uint8_t status, uint16_t id, void *data);
+        void cbDiscoverNtf(uint8_t status, uint16_t id, void *data);
+        void cbDeactivate(uint8_t status, uint16_t id, void *data);
 
-    if (status != NCI_STATUS_OK || id != NCI_ID_RSP_CORE_INIT) {
-        _state = STATE_ERROR;
-    }
-    else {
-        _log.i("TagDetect: NFC controller initialized\n");
-        _state = STATE_DISCOVER_MAP;
-    }
-}
+    private:
+        uint8_t _state;
+        NfcLog& _log;
+        NfcTags& _tags;
+};
 
-void cbRfDiscoverMap(uint8_t status, uint16_t id, void *data)
+// State machine event handler
+void NfcApps::handleEvent(void)
 {
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+    uint8_t status = TAGS_STATUS_FAILED;
 
-    if (status != NCI_STATUS_OK || id != NCI_ID_RSP_RF_DISCOVER_MAP) {
-        _state = STATE_ERROR;
-    }
-    else {
-        _log.i("TagDetect: RF polling mode configured\n");
-        _state = STATE_DISCOVER;
-    }
-}
-
-void cbRfDiscover(uint8_t status, uint16_t id, void *data)
-{
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
-
-    if (status != NCI_STATUS_OK || id != NCI_ID_RSP_RF_DISCOVER) {
-        _state = STATE_ERROR;
-    }
-    else {
-        _log.i("TagDetect: tag detection started\n");
-        _state = STATE_DISCOVERING;
-    }
-}
-
-void cbRfDiscovering(uint8_t status, uint16_t id, void *data)
-{
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
-
-    if (status != NCI_STATUS_OK) {
-        _state = STATE_ERROR;
-        return;
-    }
-
-    // handle notifications
-    switch (id) {
-        case NCI_ID_NTF_RF_INTF_ACTIVATED:
-            // tag detected
-            _log.i("TagDetect: tag detected\n");
-            // FIXME: also print for type F
-            if (data != NULL && ((tNCI_RF_INTF *)data)->specific.type == NCI_DISCOVERY_TYPE_POLL_A) {
-                _log.bi("TagDetect: tag NFCID = ", ((tNCI_RF_INTF *)data)->specific.params.poll_a.nfcid, ((tNCI_RF_INTF *)data)->specific.params.poll_a.nfcid_len);
-            }
-            _state = STATE_CONNECTED;
-            break;
-        case NCI_ID_NTF_RF_DEACTIVATE:
-            // RF polling enabled
-            _log.i("TagDetect: tag detection ready, present tag....\n");
-            _state = STATE_DISCOVERING;
-            break;
-        default:
-            _state = STATE_ERROR;
-            break;
-    }
-}
-
-void cbRfDeactivate(uint8_t status, uint16_t id, void *data)
-{
-    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
-
-    if (status != NCI_STATUS_OK || id != NCI_ID_RSP_RF_DEACTIVATE) {
-        _state = STATE_ERROR;
-    }
-    else {
-        _state = STATE_DISCOVERING;
-    }
-}
-
-/**********************************************
- *           State machine main loop
- *
- * Sends commands to the NFC controller based
- * on current state.
- * The state machine implementation is aligned
- * on NFC Forum NCI standard.
- **********************************************/
-
-void handleEvent(void)
-{
-    uint8_t status = NCI_STATUS_FAILED;
-
-    _log.d("TagDetect: state = %s\n", stateToStr[_state]);
+    _log.d("TagDetect: %s state = %s\n", __func__, tagDetectStateToStr[_state]);
 
     switch(_state) {
         case STATE_RESET:
-            // send reset command
-            status = _nci.cmdCoreReset(cbCoreReset, NCI_RESET_TYPE_KEEP_CFG);
+            // reset NFC stack and hw
+            status = _tags.reset();
+            _state = STATE_RESET_RESPONSE;
             break;
-        case STATE_INIT:
-            // send init command
-            status = _nci.cmdCoreInit(cbCoreInit);
-            break;
-        case STATE_DISCOVER_MAP:
-            // send discover map command
-            status = _nci.cmdRfDiscoverMap(cbRfDiscoverMap, sizeof(discover_maps)/sizeof(tNCI_DISCOVER_MAPS), discover_maps);
+        case STATE_RESET_RESPONSE:
+            // wait for reset
+            status = TAGS_STATUS_OK;
             break;
         case STATE_DISCOVER:
-            // send discover command to activate polling
-            status = _nci.cmdRfDiscover(cbRfDiscover, sizeof(discover_confs)/sizeof(tNCI_DISCOVER_CONFS), discover_confs);
+            // find tags
+            status = _tags.discover();
+            _state = STATE_DISCOVER_RESPONSE;
+            break;
+        case STATE_DISCOVER_RESPONSE:
+            // wait for RF loop activation
+            status = TAGS_STATUS_OK;
             break;
         case STATE_DISCOVERING:
-            // do nothing, wait for a tag to be detected
-            _nci.registerCb(cbRfDiscovering);
-            status = NCI_STATUS_OK;
+            // waiting for a tag
+            status = TAGS_STATUS_OK;
             break;
-        case STATE_CONNECTED:
-            // disconnect from tag and restart polling
-            status = _nci.cmdRfDeactivate(cbRfDeactivate, NCI_DEACTIVATE_TYPE_DISCOVERY);
+        case STATE_DEACTIVATE:
+            // disconnect from tag and restart discovery loop
+            status = _tags.deactivate();
+            _state = STATE_DEACTIVATE_RESPONSE;
+            break;
+        case STATE_DEACTIVATE_RESPONSE:
+            // wait for tag deactivation
+            status = TAGS_STATUS_OK;
             break;
         case STATE_ERROR:
         case STATE_END:
@@ -293,10 +166,86 @@ void handleEvent(void)
     }
 
     // handle error
-    if (status != NCI_STATUS_OK) {
+    if (status != TAGS_STATUS_OK) {
+        _log.e("TagDetect error: %s status = %d state = %d\n", __func__, status, _state);
         _state = STATE_ERROR;
     }
 }
+
+// Hardware reset callback
+void NfcApps::cbReset(uint8_t status, uint16_t id, void *data)
+{
+    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+
+    if (status != TAGS_STATUS_OK || id != TAGS_ID_RESET) {
+        _state = STATE_ERROR;
+    }
+    else {
+        _log.i("TagDetect: NFC stack and HW reseted\n");
+        _state = STATE_DISCOVER;
+    }
+}
+
+// Discover target callback
+void NfcApps::cbDiscover(uint8_t status, uint16_t id, void *data)
+{
+    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+
+    if (status != TAGS_STATUS_OK || id != TAGS_ID_DISCOVER) {
+        _state = STATE_ERROR;
+    }
+    else {
+        _log.i("TagDetect: NFC stack discovering tags...\n");
+        _state = STATE_DISCOVERING;
+    }
+}
+
+// Discover notification on tag detected callback
+void NfcApps::cbDiscoverNtf(uint8_t status, uint16_t id, void *data)
+{
+    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+
+    if (status != TAGS_STATUS_OK || id != TAGS_ID_DISCOVER_ACTIVATED) {
+        _state = STATE_ERROR;
+    }
+    else {
+        _log.i("TagDetect: tag detected\n");
+        // FIXME: also print for type F
+        if (data != NULL && ((tNCI_RF_INTF *)data)->specific.type == NCI_DISCOVERY_TYPE_POLL_A) {
+            _log.bi("TagDetect: tag NFCID = ", ((tNCI_RF_INTF *)data)->specific.params.poll_a.nfcid, ((tNCI_RF_INTF *)data)->specific.params.poll_a.nfcid_len);
+        }
+        _state = STATE_DEACTIVATE;
+    }
+}
+
+// Tag deactivation callback
+void NfcApps::cbDeactivate(uint8_t status, uint16_t id, void *data)
+{
+    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+
+    if (status != TAGS_STATUS_OK || id != TAGS_ID_DEACTIVATE) {
+        _state = STATE_ERROR;
+    }
+    else {
+        _state = STATE_DISCOVERING;
+    }
+}
+
+/**********************************************
+ *           Sketch runtime
+ *
+ * _log: logger (serial)
+ * _pn7120: NXP PN7120 NFC chipset
+ * _nci: NFC Connection Interface (NFC Forum)
+ * _tags: tag API wrapper to drive NCI chipset
+ * _app: sketch implementation
+ **********************************************/
+
+NfcLog _log(NFC_LOG_LEVEL_INFO);
+NfcHw_pn7120 _pn7120(_log, PN7120_IRQ, PN7120_RESET, PN7120_I2C_ADDRESS);
+NfcNci _nci(_log, _pn7120);
+NfcTags _tags(_log, _nci);
+NfcApps _app(_log, _tags);
 
 // the setup function runs once when you press reset or power the board
 void setup(void)
@@ -304,18 +253,23 @@ void setup(void)
     // add a delay for the serial bus to be mounted
     delay(2000);
 
-    // init logger, hw, nci, and state machine
+    // init all layers from bottom to top
+    // logger, hw, nci, tags, and state machine
     _log.init(230400);
     _pn7120.init();
-    _nci.init();
-    _state = STATE_RESET;
+    _nci.init(&_tags);
+    _tags.init(&_app);
+    _app.init();
 }
 
 // the loop function runs over and over again forever
 void loop(void)
 {
     // handle sketch events (state machine based)
-    handleEvent();
+    _app.handleEvent();
+
+    // handle tags class events (state machine based)
+    _tags.handleEvent();
 
     // handle NCI events (state machine based),
     // it may block waiting for NFC controller
