@@ -26,29 +26,32 @@ void NfcHw_pn7120::init(void)
     // initialize interrupt and reset lines
     pinMode(_irq, INPUT);
     pinMode(_reset, OUTPUT);
-    
+
     // VEN (reset) has to be HIGH
     digitalWrite(_reset, HIGH);
     delay(10);
-    
+
     // join i2c bus
     Wire.begin();
 }
 
 uint8_t NfcHw_pn7120::write(uint8_t buf[], uint32_t len)
 {
+    uint32_t written = 0;
+
     // print buffer
     _log.bv("NCI_TX: ", buf, len);
 
-    // i2c transfer starts with slave address (7 uppder bytes only),
+    // i2c transfer starts with slave address (7 upper bytes only),
     // then transmit the NCI packet
     Wire.beginTransmission(_address);
     while (len--) {
         Wire.write(*buf++);
+        written++;
     }
     Wire.endTransmission();
 
-    return len;
+    return written;
 }
 
 uint8_t NfcHw_pn7120::read(uint8_t buf[], uint32_t len)
@@ -61,7 +64,7 @@ uint8_t NfcHw_pn7120::read(uint8_t buf[], uint32_t len)
     do {
         *buf++ = Wire.read();
     } while (Wire.available());
-    
+
     // print response
     _log.bv("NCI_RX: ", (uint8_t *)(buf-len), len);
 

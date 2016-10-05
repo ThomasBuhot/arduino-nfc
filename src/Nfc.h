@@ -27,5 +27,6 @@
 #include "hw/NfcHw.h"
 #include "hw/NfcHw_pn7120.h"
 #include "nci/NfcNci.h"
+#include "tags/NfcTags.h"
 
 #endif /* __NFC_H__ */
