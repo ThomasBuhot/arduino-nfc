@@ -1,23 +1,23 @@
 = Near Field Communication (NFC) Library with NCI for Arduino =
 
-This library allows you to interface with an NFC controller through the NFC Forum standardized NCI. To use it you will need a NFC controller, and the appropriate hardware to control it.
+This library implements an NFC stack which allows you to interface with an NFC controller through the NFC Forum standardized NCI. To use it you will need a NFC controller, and the appropriate hardware to control it (arduino boards and wires for example).
 
-It implements the NFC Communication Interface (NCI) from the NFC Forum to interface with the NFC controller.
+The NFC stack implements:
+* a NfcTags API which defines and implements a high level API to drive tag detection and access. Applications and sketches should rely on that API to ease implementation.
+* a NfcNci API which defines and implements the NFC Communication Interface (NCI) from the NFC Forum to interface with the NFC controller.
+* a NfcHw API which defines the generic NFC controller interface.
+* a NfcHW_pn7120 which implements the NfcHw interface for NXP PN7120 NFC controller.
 
-It supports tag detection at the moment, and has been tested with the following HW configuration:
+The current implementation supports tag detection at the moment, and has been tested with the following HW configuration:
 * Intel Arduino/Genuino 101
 * NXP PN7120 NFC Controller
 
-It contains one sketch example to detect tags of types 1, 2, and 3 according to the NFC Forum for polling type A and F.
+It contains one sketch example (TagDetect) to detect tags of types 1, 2, and 3 according to the NFC Forum for polling type A and F. When a tag is detected its NFCID is printed on the serial console.
   
-The NCI library is generic and should work with any other NFC controller which follows the NFC Forum specification.
-
-To test with another NFC Controller HW:
-* writes a new class that inherits the NfcHw class and which implements the virtual APIs (read, write, etc),
-* allocates a new instance of that class and feed the constructor of NfcNCi with that objet.
-
-From there the NfcNCi will be capable to interface directly with your NFC Controller through the HW connection
-your class manages (i2c, uart, spi, etc).
+The NCI library is generic and should work with any other NFC controller which follows the NFC Forum specification. To support a new NFC controller you need:
+* to implement a new class object that implements NfcHw, you can mimic the implementation of NfcHw_pn7120 and which implements the virtual APIs (read, write, etc).
+* modify the TagDetect example to instantiate your new hardware object and feed the constructor of NfcNCi with that objet.
+From there the NfcNCi will be capable to interface directly with your NFC Controller through the HW connection your class manages (i2c, uart, spi, etc).
 
 For more information about this library please visit us at https://github.com/ThomasBuhot/arduino-nfc
 
