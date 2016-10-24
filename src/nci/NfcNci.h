@@ -16,6 +16,23 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * The NCI names and definitions in this file are partially derived
+ * from nci_defs.h used in Android whose copyright is copied below.
+ *
+ * Copyright (C) 1999-2014 Broadcom Corporation
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #ifndef __NFC_NCI_H__
@@ -66,6 +83,14 @@
 #define NCI_OID_MASK        0x3F
 #define NCI_OID_SHIFT       0
 
+/* NCI Data Format:
+ * byte 0: MT(0) PBF CID
+ * byte 1: RFU
+ * byte 2: Data Length */
+/* CID: Connection Identifier (byte 0) 1-0xF Dynamically assigned (by NFCC), 0 is predefined  */
+#define NCI_CID_MASK        0x0F
+#define NCI_CID_RF_STATIC   0x00
+
 /* builds byte0 of NCI Command and Notification packet */
 #define NCI_MSG_BLD_HDR0(p, mt, gid) \
     *(p)++ = (uint8_t) (((mt) << NCI_MT_SHIFT) | (gid));
@@ -88,6 +113,16 @@
 /* parse byte1 of NCI Cmd/Ntf */
 #define NCI_MSG_PRS_HDR1(p, oid) \
     oid = (*(p) & NCI_OID_MASK); (p)++;
+
+/* builds 3-byte message header of NCI Data packet */
+#define NCI_DATA_BLD_HDR(p, cid, len) \
+    *(p)++ = (uint8_t) (cid); *(p)++ = 0; *(p)++ = (uint8_t) (len);
+
+#define NCI_DATA_PBLD_HDR(p, pbf, cid, len) \
+    *(p)++ = (uint8_t) (((pbf) << NCI_PBF_SHIFT) | (cid)); *(p)++=0; *(p)++ = (len);
+
+#define NCI_DATA_PRS_HDR(p, pbf, cid, len) \
+    (pbf) = (*(p) & NCI_PBF_MASK) >> NCI_PBF_SHIFT; (cid) = (*(p) & NCI_CID_MASK); p++; p++; (len) = *(p)++;
 
 #define UINT8_TO_STREAM(p, u8) \
     *(p)++ = (uint8_t)(u8);
@@ -321,7 +356,8 @@ class NfcNciCb
         virtual void cbRfDiscover(uint8_t status, uint16_t id, void *data) = 0;  
         virtual void cbRfDiscoverNtf(uint8_t status, uint16_t id, void *data) = 0;  
         virtual void cbRfDeactivate(uint8_t status, uint16_t id, void *data) = 0;  
-        virtual void cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data) = 0;  
+        virtual void cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data) = 0;
+        virtual void cbData(uint8_t status, uint16_t id, void *data) = 0;
         virtual void cbError(uint8_t status, uint16_t id, void *data) = 0;  
 };
 
@@ -338,9 +374,11 @@ class NfcNci
         uint8_t cmdRfDiscoverMap(uint8_t num, tNCI_DISCOVER_MAPS* p_maps);
         uint8_t cmdRfDiscover(uint8_t num, tNCI_DISCOVER_CONFS* p_confs);
         uint8_t cmdRfDeactivate(uint8_t type);
+        uint8_t dataSend(uint8_t cid, uint8_t buf[], uint32_t len);
 
     private:
         uint32_t waitForEvent(uint8_t buf[]);
+        void handleDataEvent(uint8_t buf[], uint32_t len);
         void handleCoreEvent(uint8_t buf[], uint32_t len);
         void handleRfEvent(uint8_t buf[], uint32_t len);
         uint8_t rspCoreReset(uint8_t buf[]);
@@ -359,6 +397,9 @@ class NfcNci
         NfcHw& _hw;
         NfcNciCb *_cb;
         void *_data;
+        tNCI_RESET _reset;              // reset response
+        tNCI_RF_INTF _rf_intf;          // RF interface
+        tNCI_DEACTIVATE _deactivate;    // deactivate
 };
 
 #endif /* __NFC_NCI_H__ */

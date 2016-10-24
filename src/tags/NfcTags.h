@@ -22,68 +22,11 @@
 #define __NFC_TAGS_H__
 
 #include <Arduino.h>
+#include "tags/NfcTagsDef.h"
+#include "tags/NfcTagsCb.h"
+#include "tags/NfcTagsIntf.h"
 #include "log/NfcLog.h"
 #include "nci/NfcNci.h"
-#include "nci/NfcNci.h"
-
-// State definition
-enum {
-    TAGS_STATE_NONE = 0,
-    // reset command states
-    TAGS_STATE_INIT_RESET,
-    TAGS_STATE_INIT_INIT,
-    TAGS_STATE_INIT_DONE,
-    // discover command states
-    TAGS_STATE_DISCOVER_MAP,
-    TAGS_STATE_DISCOVER,
-    TAGS_STATE_DISCOVER_NTF,
-    TAGS_STATE_DISCOVER_ACTIVATED,
-    // disconnect command states
-    TAGS_STATE_DEACTIVATE,
-    TAGS_STATE_DEACTIVATE_RSP,
-    TAGS_STATE_DEACTIVATE_NTF
-};
-typedef uint8_t tTAGS_STATE;
-
-// Interface identifier
-enum {
-    TAGS_ID_NONE = 0,
-    TAGS_ID_RESET,
-    TAGS_ID_DISCOVER,
-    TAGS_ID_DISCOVER_ACTIVATED,
-    TAGS_ID_DEACTIVATE
-};
-typedef uint16_t tTAGS_ID;
-
-// Status definition
-enum {
-    TAGS_STATUS_OK = 0,
-    TAGS_STATUS_REJECTED,
-    TAGS_STATUS_FAILED
-};
-
-// NCI response type definition
-typedef struct {
-    void *data;
-    uint16_t id;
-    uint8_t status;
-} tTAGS_NCI_RSP;
-
-// Callback object that clients have to implement
-// to be notified on response or event
-class NfcTagsCb
-{
-    public:
-        NfcTagsCb(void) {;}
-        // Reset response
-        virtual void cbReset(uint8_t status, uint16_t id, void *data) = 0;
-        // Discover response
-        virtual void cbDiscover(uint8_t status, uint16_t id, void *data) = 0;
-        // Tag detection notification
-        virtual void cbDiscoverNtf(uint8_t status, uint16_t id, void *data) = 0;
-        // Deactivation response
-        virtual void cbDeactivate(uint8_t status, uint16_t id, void *data) = 0;
-};
 
 // Tag API object definition which interfaces with the NCI
 // and implements its callback to be notified on NCI response
@@ -92,17 +35,27 @@ class NfcTags : public NfcNciCb
 {
     public:
         NfcTags(NfcLog& log, NfcNci& nci);
-        void init(NfcTagsCb *cb) {_cb = cb;}
+        void init(NfcTagsCb *cb) {_p_cb = cb; _tag2.init(cb);}
         void handleEvent(void);
 
+    // public API
     public:
-        // Reset stack and hardware
-        uint8_t reset(void);
-        // Configure RF and start the discovering loop
-        uint8_t discover(void);
-        // Deactivate an activated tag and re-start
+        // reset command of stack and hardware
+        // response is callback function cbReset()
+        uint8_t cmdReset(void);
+        // command to configure RF and start the discovering loop
+        // response is callback function cbDiscover()
+        // notification when tag is found is function cbDiscoverNtf()
+        uint8_t cmdDiscover(void);
+        // command to deactivate an activated tag (found tag) and re-start
         // the discovering loop
-        uint8_t deactivate(void);
+        // response is callback function cbDeactivate()
+        uint8_t cmdDeactivate(void);
+        // get tag interface object for low level commands
+        NfcTagsIntf* getInterface(void) {return _p_tagIntf;}
+        // command to dump an activated (found) tag
+        // response is callback function cbDump()
+        uint8_t cmdDump(void);
 
     private:
         // reset
@@ -118,20 +71,28 @@ class NfcTags : public NfcNciCb
         void handleDeactivate(void);
         void cbRfDeactivate(uint8_t status, uint16_t id, void *data);
         void cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data);
+        // dump
+        void handleDump(void);
+        // Data exchange callback
+        void cbData(uint8_t status, uint16_t id, void *data);
         // error
         void cbError(uint8_t status, uint16_t id, void *data);
         // internal stuff
         void setNciResponse(uint8_t status, uint16_t id, void *data);
         uint8_t translateNciStatus(uint8_t nci_status);
+        void identifyTag(tNCI_RF_INTF *rf_intf);
 
     private:
-        tTAGS_STATE _state;     // internal state
-        tTAGS_ID _id;           // command or event identifier
-        NfcLog& _log;           // logging interface
-        NfcNci& _nci;           // NCI interface
-        NfcTagsCb *_cb;         // Callback object
-        void *_data;            // application data
-        tTAGS_NCI_RSP _nciRsp;  // NCI response
+        uint8_t _state;                 // internal state
+        uint8_t _id;                    // command or event identifier
+        NfcLog& _log;                   // logging interface
+        NfcNci& _nci;                   // NCI interface
+        NfcTagsCb *_p_cb;               // callback object
+        void *_data;                    // application data
+        tTAGS_NCI_RSP _nciRsp;          // NCI response
+        NfcTagsIntfType2 _tag2;         // NFC Forum tag type 2
+        NfcTagsIntfMifare _tagMifare;   // NXP Mifare classic / plus tag
+        NfcTagsIntf *_p_tagIntf;        // current tag interface
 };
 
-#endif /* __NFC_TAGS_H__ */
+#endif // __NFC_TAGS_H__

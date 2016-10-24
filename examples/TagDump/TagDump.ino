@@ -1,5 +1,5 @@
 /*
- * TagDetect.ino
+ * TagDump.ino
  *
  * Copyright (c) Thomas Buhot. All right reserved.
  *
@@ -21,14 +21,15 @@
 /******************************************************************************
  *           Purpose of this sketch
  *
- * The purpose of this sketch is to provide an example of NFC tag detection
+ * The purpose of this sketch is to provide an example of NFC tag dump
  * by using a simple but efficient NFC stack.
- * 
+  
  * The NFC stack implements a tag API which drives an NFC controller
  * through the NCI (NFC Controller Interface) as defined by the NFC Forum.
  * The NFC stack
  * consists in:
  * - NfcTagsi   : high level tag API for detection, deactivation
+ * - NfcTagsIntf: tag interface to dump tags
  * - NfcNci     : NCI implementation, hardware independent
  * - NfcHw      : NFC hardaware interface
  *
@@ -39,7 +40,8 @@
  * 1. initializes the NFC controller
  * 2. configures the RF discovery parameters
  * 3. prints NFCID of the detected tag
- * 4. restart the tag detection back to step 2
+ * 4. dump the content of tag (read the whole content)
+ * 5. restart the tag detection back to step 2
  *
  * The HW configuration used to test that sketch is: Intel Arduino 101
  * with NXP PN7120 SBC kit.
@@ -80,6 +82,8 @@ enum
     STATE_DISCOVER,
     STATE_DISCOVER_RESPONSE,
     STATE_DISCOVERING,
+    STATE_DUMP,
+    STATE_DUMP_RESPONSE,
     STATE_DEACTIVATE,
     STATE_DEACTIVATE_RESPONSE,
     STATE_ERROR,
@@ -92,6 +96,8 @@ const char *tagDetectStateToStr[] = {
     "STATE_DISCOVER",
     "STATE_DISCOVER_RESPONSE",
     "STATE_DISCOVERING",
+    "STATE_DUMP",
+    "STATE_DUMP_RESPONSE",
     "STATE_DEACTIVATE",
     "STATE_DEACTIVATE_RESPONSE",
     "STATE_ERROR",
@@ -145,6 +151,15 @@ void NfcApps::handleEvent(void)
             break;
         case STATE_DISCOVERING:
             // waiting for a tag to be detected
+            status = TAGS_STATUS_OK;
+            break;
+        case STATE_DUMP:
+            // dump tag content
+            status = _tags.cmdDump();
+            _state = STATE_DUMP_RESPONSE;
+            break;
+        case STATE_DUMP_RESPONSE:
+            // waiting for tag dump response
             status = TAGS_STATUS_OK;
             break;
         case STATE_DEACTIVATE:
@@ -217,17 +232,42 @@ void NfcApps::cbDiscoverNtf(uint8_t status, uint16_t id, void *data)
             len = pTag->getNfcidLen();
             buf = pTag->getNfcidBuf();
             _log.bi("TagDetect: tag NFCID = ", buf, len);
+            // dump interface is only implemented for tag type 2 at the moment
+            if (type == TAGS_TYPE_2) {
+                _state = STATE_DUMP;
+            }
+            else {
+                _state = STATE_DEACTIVATE;
+            }
         }
         else {
             _log.i("TagDetect: unknown tag type detected\n");
+            _state = STATE_DEACTIVATE;
         }
     }
-    _state = STATE_DEACTIVATE;
 }
 
-// Tag dump callback, unused in that sketch which ony detects tags
+// Tag dump callback
 void NfcApps::cbDump(uint8_t status, uint16_t id, void *data)
 {
+    tTAGS_DUMP *dump = (tTAGS_DUMP*)data;
+
+    _log.d("TagDetect: %s status = %d id = %d\n", __func__, status, id);
+
+    if (status != TAGS_STATUS_OK || id != TAGS_ID_DUMP || dump == NULL) {
+        _state = STATE_ERROR;
+    }
+    else {
+        _log.bi("TagDetect: tag dump = ", dump->buf, dump->len);
+        if (dump->more) {
+            // dump not completed, more data to come
+            _state = STATE_DUMP_RESPONSE;
+        }
+        else {
+            // dump completed
+            _state = STATE_DEACTIVATE;
+        }
+    }
 }
 
 // Tag deactivation callback

@@ -60,6 +60,27 @@ tNCI_DISCOVER_CONFS discover_confs[] =
     }
 };
 
+// State definition
+enum {
+    TAGS_STATE_NONE = 0,
+    // reset command states
+    TAGS_STATE_INIT_RESET,
+    TAGS_STATE_INIT_INIT,
+    TAGS_STATE_INIT_DONE,
+    // discover command states
+    TAGS_STATE_DISCOVER_MAP,
+    TAGS_STATE_DISCOVER,
+    TAGS_STATE_DISCOVER_NTF,
+    TAGS_STATE_DISCOVER_ACTIVATED,
+    // disconnect command states
+    TAGS_STATE_DEACTIVATE,
+    TAGS_STATE_DEACTIVATE_RSP,
+    TAGS_STATE_DEACTIVATE_NTF,
+    // dump command states
+    TAGS_STATE_DUMP,
+    TAGS_STATE_DUMP_RSP
+};
+
 // State strings
 const char *nfcTagsStateToStr[] = {
     "TAGS_STATE_NONE",
@@ -75,15 +96,19 @@ const char *nfcTagsStateToStr[] = {
     // disconnect command states
     "TAGS_STATE_DEACTIVATE",
     "TAGS_STATE_DEACTIVATE_RSP",
-    "TAGS_STATE_DEACTIVATE_NTF"
+    "TAGS_STATE_DEACTIVATE_NTF",
+    // dump command states
+    "TAGS_STATE_DUMP",
+    "TAGS_STATE_DUMP_RSP"
 };
 
 NfcTags::NfcTags(NfcLog& log, NfcNci& nci) :
          _state(TAGS_STATE_NONE), _id(TAGS_ID_NONE),
-         _log(log), _nci(nci)
+         _log(log), _nci(nci), _p_cb(NULL),
+         _tag2(log, nci), _tagMifare(log, nci)
 {
-    _cb = NULL;
     _data = NULL;
+    _p_tagIntf = NULL;
 }
 
 void NfcTags::setNciResponse(uint8_t status, uint16_t id, void *data)
@@ -119,12 +144,6 @@ void NfcTags::cbError(uint8_t status, uint16_t id, void *data)
 
 void NfcTags::handleEvent(void)
 {
-    // check callback object
-    if (_cb == NULL) {
-        _log.e("NfcTags: %s no callback object registered\n", __func__);
-        return;
-    }
-
     // process event per command
     switch(_id) {
         case TAGS_ID_RESET:
@@ -136,19 +155,23 @@ void NfcTags::handleEvent(void)
         case TAGS_ID_DEACTIVATE:
             handleDeactivate();
             break;
+        case TAGS_ID_DUMP:
+            handleDump();
+            break;
         default:
             _log.e("NfcTags: %s ignore unknown event %d\n", __func__, _id);
             break;
     }
 }
 
-uint8_t NfcTags::reset(void)
+uint8_t NfcTags::cmdReset(void)
 {
     // reset command migth be sent at anytime
     // reset state accordingly
     _log.d("NfcTags: %s state = %s\n", __func__, nfcTagsStateToStr[_state]);
     _state = TAGS_STATE_INIT_RESET;
     _id = TAGS_ID_RESET;
+    _p_tagIntf = NULL;
     return TAGS_STATUS_OK;
 }
 
@@ -168,6 +191,10 @@ void NfcTags::handleReset(void)
             // send NCI init command
             status = _nci.cmdCoreInit();
             break;
+        case TAGS_STATE_INIT_DONE:
+            // command completed
+            status = NCI_STATUS_OK;
+            break;
         default:
             // unhandled state
             status = NCI_STATUS_REJECTED;
@@ -178,7 +205,7 @@ void NfcTags::handleReset(void)
     if (status != NCI_STATUS_OK) {
         status = translateNciStatus(status);
         _log.e("NfcTags: %s state = %s error status = %d\n", __func__, nfcTagsStateToStr[_state], status);
-        _cb->cbReset(status, TAGS_ID_RESET, NULL);
+        _p_cb->cbReset(status, TAGS_ID_RESET, NULL);
     }
 } 
 
@@ -199,7 +226,7 @@ void NfcTags::cbCoreReset(uint8_t status, uint16_t id, void *data)
     }
 
     status = translateNciStatus(status);
-    _cb->cbDeactivate(status, TAGS_ID_RESET, NULL);
+    _p_cb->cbDeactivate(status, TAGS_ID_RESET, NULL);
 }
 
 void NfcTags::cbCoreInit(uint8_t status, uint16_t id, void *data)
@@ -222,10 +249,10 @@ void NfcTags::cbCoreInit(uint8_t status, uint16_t id, void *data)
         status = translateNciStatus(status);
     }
 
-    _cb->cbReset(status, TAGS_ID_RESET, NULL);
+    _p_cb->cbReset(status, TAGS_ID_RESET, NULL);
 }
 
-uint8_t NfcTags::discover(void)
+uint8_t NfcTags::cmdDiscover(void)
 {
     uint8_t status;
 
@@ -280,7 +307,7 @@ void NfcTags::handleDiscover(void)
     if (status != NCI_STATUS_OK) {
         _log.e("NfcTags: %s state = %s error status = %d\n", __func__, nfcTagsStateToStr[_state], status);
         status = translateNciStatus(status);
-        _cb->cbDiscover(status, TAGS_ID_DISCOVER, NULL);
+        _p_cb->cbDiscover(status, TAGS_ID_DISCOVER, NULL);
     }
 }
 
@@ -301,7 +328,7 @@ void NfcTags::cbRfDiscoverMap(uint8_t status, uint16_t id, void *data)
     }
 
     status = translateNciStatus(status);
-    _cb->cbDeactivate(status, TAGS_ID_DISCOVER, NULL);
+    _p_cb->cbDeactivate(status, TAGS_ID_DISCOVER, NULL);
 }
 
 void NfcTags::cbRfDiscover(uint8_t status, uint16_t id, void *data)
@@ -324,8 +351,9 @@ void NfcTags::cbRfDiscover(uint8_t status, uint16_t id, void *data)
         status = translateNciStatus(status);
     }
 
-    _cb->cbDiscover(status, TAGS_ID_DISCOVER, NULL);
+    _p_cb->cbDiscover(status, TAGS_ID_DISCOVER, NULL);
 }
+
 
 void NfcTags::cbRfDiscoverNtf(uint8_t status, uint16_t id, void *data)
 {
@@ -347,27 +375,66 @@ void NfcTags::cbRfDiscoverNtf(uint8_t status, uint16_t id, void *data)
         status = translateNciStatus(status);
     }
 
-    _cb->cbDiscoverNtf(status, TAGS_ID_DISCOVER_ACTIVATED, _nciRsp.data);
+    // identify tag found and notify application
+    identifyTag((tNCI_RF_INTF *)data);
+    _p_cb->cbDiscoverNtf(status, TAGS_ID_DISCOVER_ACTIVATED, NULL);
 }
 
-uint8_t NfcTags::deactivate(void)
+#define UID_SIZE_DOUBLE     7
+#define UID_NXP             0x04
+#define BIT_MASK(val, bit)  (val & (1 << bit))
+
+void NfcTags::identifyTag(tNCI_RF_INTF *rf_intf)
+{
+    uint8_t b;
+
+    if (rf_intf == NULL) {
+        return;
+    }
+
+    // FIXME: Mifare Ultra Ligth tag type 2 only at the moment
+    // See NXP application note documents AN1303 and AN1305
+    if (rf_intf->specific.type == NCI_DISCOVERY_TYPE_POLL_A) {
+        if (rf_intf->specific.params.poll_a.nfcid_len == UID_SIZE_DOUBLE) {
+            if (rf_intf->specific.params.poll_a.nfcid[0] == UID_NXP) {
+                // card is a Mifare Ultra Ligth card
+                _tag2.initTag(rf_intf);
+                _p_tagIntf = &_tag2;
+            }
+        }
+        else if (rf_intf->specific.params.poll_a.sel_res_len == 1) {
+            b = rf_intf->specific.params.poll_a.sel_res;
+            if (BIT_MASK(b, 3) && BIT_MASK(b, 4)) {
+                // card is a Mifare classic card
+                _tagMifare.initTag(rf_intf);
+                _p_tagIntf = &_tagMifare;
+            }
+        }
+    }
+    else {
+        _p_tagIntf = NULL;
+    }
+}
+
+uint8_t NfcTags::cmdDeactivate(void)
 {
     uint8_t status;
 
     _log.d("NfcTags: %s state = %s\n", __func__, nfcTagsStateToStr[_state]);
 
-    // check state
-    if (_state != TAGS_STATE_DISCOVER_ACTIVATED) {
-        status = TAGS_STATUS_REJECTED;
-        goto bail;
+    switch(_state) {
+        case TAGS_STATE_DISCOVER_ACTIVATED:
+        case TAGS_STATE_DUMP:
+            _state = TAGS_STATE_DEACTIVATE;
+            _id = TAGS_ID_DEACTIVATE;
+            status = TAGS_STATUS_OK;
+            _p_tagIntf = NULL;
+            break;
+        default:
+            status = TAGS_STATUS_REJECTED;
+            break;
     }
 
-    // prepare state machine
-    _state = TAGS_STATE_DEACTIVATE;
-    _id = TAGS_ID_DEACTIVATE;
-    status = TAGS_STATUS_OK;
-
-bail:
     return status;
 }
 
@@ -400,10 +467,10 @@ void NfcTags::handleDeactivate(void)
     }
 
     // check status and notify
-    if (status != TAGS_STATUS_OK) {
+    if (status != NCI_STATUS_OK) {
         _log.e("NfcTags: %s state = %s error status = %d\n", __func__, nfcTagsStateToStr[_state], status);
         status = translateNciStatus(status);
-        _cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
+        _p_cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
     }
 }
 
@@ -423,7 +490,7 @@ void NfcTags::cbRfDeactivate(uint8_t status, uint16_t id, void *data)
     }
 
     status = translateNciStatus(status);
-    _cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
+    _p_cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
 }
 
 void NfcTags::cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data)
@@ -449,6 +516,73 @@ void NfcTags::cbRfDeactivateNtf(uint8_t status, uint16_t id, void *data)
         status = translateNciStatus(status);
     }
 
-    _cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
+    _p_cb->cbDeactivate(status, TAGS_ID_DEACTIVATE, NULL);
+}
+
+uint8_t NfcTags::cmdDump(void)
+{
+    uint8_t status;
+
+    _log.d("NfcTags: %s state = %s\n", __func__, nfcTagsStateToStr[_state]);
+
+    // check state
+    if (_state != TAGS_STATE_DISCOVER_ACTIVATED) {
+        status = TAGS_STATUS_REJECTED;
+        goto bail;
+    }
+
+    // check tag is activated
+    if (_p_tagIntf == NULL) {
+        status = TAGS_STATUS_FAILED;
+        goto bail;
+    }
+
+    // prepare tag interface
+    if (_p_tagIntf->cmdDump() != TAGS_STATUS_OK) {
+        status = TAGS_STATUS_FAILED;
+        goto bail;
+    }
+
+    // prepare state machine
+    _state = TAGS_STATE_DUMP;
+    _id = TAGS_ID_DUMP;
+    status = TAGS_STATUS_OK;
+
+bail:
+    return status;
+}
+
+void NfcTags::handleDump(void)
+{
+    uint8_t status;
+
+    _log.d("NfcTags: %s state = %s\n", __func__, nfcTagsStateToStr[_state]);
+
+    // check state and tag interface
+    if (_state != TAGS_STATE_DUMP) {
+        status = TAGS_STATUS_REJECTED;
+    }
+    else if (_p_tagIntf == NULL) {
+        status = TAGS_STATUS_FAILED;
+    }
+    else {
+        status = _p_tagIntf->handleDump();
+    }
+
+    // check status and notify
+    if (status != TAGS_STATUS_OK) {
+        _log.e("NfcTags: %s state = %s error status = %d\n", __func__, nfcTagsStateToStr[_state], status);
+        _p_cb->cbDump(status, TAGS_ID_DUMP, NULL);
+    }
+}
+
+void NfcTags::cbData(uint8_t status, uint16_t id, void *data)
+{
+    _log.d("NfcTags: %s status = %d id = %d\n", __func__, status, id);
+    setNciResponse(status, id, data);
+
+    if (_p_tagIntf != NULL) {
+        _p_tagIntf->handleData(status, id, data);
+    }
 }
 
