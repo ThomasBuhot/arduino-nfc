@@ -141,7 +141,7 @@ uint8_t NfcTagsIntfType2::handleDump(void)
     }
 
     return status;
- 
+}
 
 void NfcTagsIntfType2::handleData(uint8_t status, uint16_t id, void *data)
 {
